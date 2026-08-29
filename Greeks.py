@@ -52,7 +52,7 @@ def fetch_real_contract(ticker, target_dte_days=365, contract_type="call", money
         raise ValueError("moneyness must be 'atm', 'itm', or 'otm'")
 
     row = contracts[contracts["strike"] == K].iloc[0]
-    iv = row["impliedVolatility"]  # market-implied vol — use this instead of historical!
+    iv = row["impliedVolatility"]
 
     print(f"\n--- Real contract selected ---")
     print(f"Ticker: {ticker} | S={S:.2f} | Expiry={expiry} | T={T:.3f}yr | K={K} | IV={iv:.2%}")
@@ -197,23 +197,19 @@ def gamma_rebalancing(step, K, r, vol, T, K1, T1, gbm_walks):
         if tau2 <= 0:
             break
 
-        # Greeks on your short call (position = -1)
-        gamma_portfolio = compute_gamma(S, K,  r, vol, tau)
-        delta_portfolio = compute_delta(S, K,  r, vol, tau)
+        # greeks of the option we're short (raw, position sign applied below)
+        gamma_target = compute_gamma(S, K,  r, vol, tau)
+        delta_target = compute_delta(S, K,  r, vol, tau)
 
         # Greeks on the hedging option (the one you BUY to kill gamma)
         gamma_hedge_option = compute_gamma(S, K1, r, vol, tau2)
         delta_hedge_option = compute_delta(S, K1, r, vol, tau2)
 
-        # Step 1: how many of the hedging option do you need?
-        w = gamma_portfolio / gamma_hedge_option   # units of second option
+        # units of hedge option needed to flatten gamma: -gamma_target + w*gamma_hedge = 0
+        w = gamma_target / gamma_hedge_option
 
-        # Step 2: net delta after adding w units of the hedging option
-        net_delta = delta_portfolio - w * delta_hedge_option
-
-        # Step 3: buy/sell -net_delta shares to flatten delta
-        # (shares don't move gamma, so this is safe)
-        shares_to_hold = -net_delta
+        # shares needed to flatten what's left of delta after the gamma hedge
+        shares_to_hold = delta_target - w * delta_hedge_option
 
         # Cost of this rebalancing step
         c2 = bsm_price(S, K1, r, tau2, vol, "call")
@@ -226,14 +222,14 @@ def gamma_rebalancing(step, K, r, vol, T, K1, T1, gbm_walks):
         deltas.append(shares_to_hold)
         option_cost.append(cum_option_cost)
         shares_cost.append(cum_share_cost)
-        gammas.append(gamma_portfolio + w * gamma_hedge_option)  # should be ~0
+        gammas.append(-gamma_target + w * gamma_hedge_option)  # portfolio gamma, should be ~0
         ws.append(w)
         c2s.append(c2)
 
         prev_w     = w
         prev_share = shares_to_hold
-        
-        print(f"t={t:>4} | tau={tau:.4f} | S={S:.2f} | gamma_portfolio={gamma_portfolio:.4f} | gamma_hedge_option={gamma_hedge_option:.4f} | w={w:.4f} | shares={shares_to_hold:.4f}")
+
+        print(f"t={t:>4} | tau={tau:.4f} | S={S:.2f} | gamma_target={gamma_target:.4f} | gamma_hedge_option={gamma_hedge_option:.4f} | w={w:.4f} | shares={shares_to_hold:.4f}")
 
     return calls, deltas, gammas, option_cost, shares_cost, ws, c2s
 
@@ -307,31 +303,27 @@ def vega_rebalancing(step, K, r, vol, T, K1, T1, K2, T2, gbm_walks):
         if tau2 <= 0:
             break
 
-        # Greeks on your short call
-        vega_portfolio = compute_vega(S, K,  r, vol, tau)
-        gamma_portfolio = compute_gamma(S, K,  r, vol, tau)
-        delta_portfolio = compute_delta(S, K,  r, vol, tau)
+        # greeks of the option we're short (raw, position sign applied below)
+        vega_target = compute_vega(S, K,  r, vol, tau)
+        gamma_target = compute_gamma(S, K,  r, vol, tau)
+        delta_target = compute_delta(S, K,  r, vol, tau)
 
         # Greeks on the hedging option (the one you BUY to kill gamma)
         vega_option1 = compute_vega(S, K1,  r, vol, tau1)
         gamma_option1 = compute_gamma(S, K1, r, vol, tau1)
         delta_option1 = compute_delta(S, K1, r, vol, tau1)
-        
+
         # Greeks on the hedging option (the one you BUY to kill gamma)
         vega_option2 = compute_vega(S, K2,  r, vol, tau2)
         gamma_option2 = compute_gamma(S, K2, r, vol, tau2)
         delta_option2 = compute_delta(S, K2, r, vol, tau2)
 
-        # Step 1: how many of the hedging option do you need for each option? one kills gamma the other vega
-        w1 = (-gamma_option2 * vega_portfolio + gamma_portfolio * vega_option2) / (gamma_option1 * vega_option2 - gamma_option2 * vega_option1) # units of second option
-        w2 = (vega_portfolio - w1 * vega_option1) / vega_option2
-        
-        # Step 2: net delta after adding w units of the hedging option
-        net_delta = delta_portfolio - w1 * delta_option1 - w2 * delta_option2
+        # solve the 2x2 system (kill gamma and vega at once) via Cramer's rule
+        w1 = (-gamma_option2 * vega_target + gamma_target * vega_option2) / (gamma_option1 * vega_option2 - gamma_option2 * vega_option1) # units of first option
+        w2 = (vega_target - w1 * vega_option1) / vega_option2
 
-        # Step 3: buy/sell -net_delta shares to flatten delta
-        # (shares don't move gamma, so this is safe)
-        shares_to_hold = -net_delta
+        # shares needed to flatten what's left of delta after both option hedges
+        shares_to_hold = delta_target - w1 * delta_option1 - w2 * delta_option2
 
         # Cost of this rebalancing step
         c1 = bsm_price(S, K1, r, tau1, vol, "call")
@@ -349,8 +341,8 @@ def vega_rebalancing(step, K, r, vol, T, K1, T1, K2, T2, gbm_walks):
         option1_cost.append(cum_option1_cost)
         option2_cost.append(cum_option2_cost)
         shares_cost.append(cum_share_cost)
-        net_gammas.append(gamma_portfolio + w1 * gamma_option1 + w2 * gamma_option2)  # should be ~0
-        net_vegas.append(-vega_portfolio + w1 * vega_option1 + w2 * vega_option2)
+        net_gammas.append(-gamma_target + w1 * gamma_option1 + w2 * gamma_option2)  # should be ~0
+        net_vegas.append(-vega_target + w1 * vega_option1 + w2 * vega_option2)  # should be ~0
         w1s.append(w1)
         c1s.append(c1)
         w2s.append(w2)
@@ -396,7 +388,7 @@ def build_vega_hedged_portfolio(vol, K, r, T, step, K1, T1, K2, T2, gbm_walks):
             - calls_repeated[i]
             + (w1s_repeated[i]) * c1s_repeated[i] - opt1_cost_repeated[i]
             + (w2s_repeated[i]) * c2s_repeated[i] - opt2_cost_repeated[i]
-            + (-deltas_repeated[i]) * gbm_walks[i] - shares_cost_repeated[i]
+            + deltas_repeated[i] * gbm_walks[i] - shares_cost_repeated[i]
         )
         portfolio_value.append(pv)
 
@@ -461,7 +453,7 @@ def run_mc_gamma(n_paths, vol, K, r, T, step, K1, T1, S0):
 
         # 3. Repeat rebalancing-step values to daily resolution
         calls_r        = repeat_to_length(calls,        step, n)
-        deltas_r       = repeat_to_length(deltas,       step, n)   # shares_to_hold = -net_delta (already fixed in your code)
+        deltas_r       = repeat_to_length(deltas,       step, n)   # deltas = shares_to_hold from gamma_rebalancing
         option_cost_r  = repeat_to_length(option_cost,  step, n)
         shares_cost_r  = repeat_to_length(shares_cost,  step, n)
         ws_r           = repeat_to_length(ws,           step, n)
@@ -561,15 +553,14 @@ def diagnose_gamma_hedge(vol, K, r, T, K1, T1, S):
     g_hedge = compute_gamma(S, K1, r, vol, tau1)
     d_hedge = compute_delta(S, K1, r, vol, tau1)
     
-    w = -g_port / g_hedge
-    net_delta = d_port + w * d_hedge
-    shares_to_hold = -net_delta
-    
+    w = g_port / g_hedge
+    shares_to_hold = d_port - w * d_hedge
+
     print(f"\n\nS={S:.2f} | K={K} | K1={K1} | T={T:.3f} | T1={T1:.3f} | vol={vol:.4f}")
     print(f"gamma_port={g_port:.6f}  |  gamma_hedge={g_hedge:.6f}")
     print(f"delta_port={d_port:.6f}  |  delta_hedge={d_hedge:.6f}")
-    print(f"w={w:.4f}  |  net_delta={net_delta:.6f}  |  shares_to_hold={shares_to_hold:.6f}")
-    print(f"net_gamma = {g_port + w * g_hedge:.8f}  <-- should be ~0")
+    print(f"w={w:.4f}  |  shares_to_hold={shares_to_hold:.6f}")
+    print(f"net_gamma = {-g_port + w * g_hedge:.8f}  <-- should be ~0")
     print(f"c1 (short)  = {bsm_price(S, K,  r, tau,  vol, 'call'):.4f}")
     print(f"c2 (hedge)  = {bsm_price(S, K1, r, tau1, vol, 'call'):.4f}")
 

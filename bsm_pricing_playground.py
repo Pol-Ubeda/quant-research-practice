@@ -24,11 +24,9 @@ def estimate_vol(df, col="Close"):
     return sigma_hat
 
 def bsm_price(S0, K, r, T, vol, contract_type="call"):
-    d1 = (np.log(S0/K) + (r + vol**2)*T) / (vol * np.sqrt(T))
-    d2 = d1 - (vol * np.sqrt(T))    
-    n1 = norm.cdf(d1)
-    n2 = norm.cdf(d2)
-    
+    d1 = (np.log(S0/K) + (r + 0.5*vol**2)*T) / (vol * np.sqrt(T))
+    d2 = d1 - (vol * np.sqrt(T))
+
     if(contract_type == "call"):
         n1 = norm.cdf(d1)
         n2 = norm.cdf(d2)
@@ -42,20 +40,19 @@ def bsm_price(S0, K, r, T, vol, contract_type="call"):
         sys.exit(1)
     return price
 
-def change_in_stock(minS, maxS, vol, K, r, T, n):
+def change_in_stock(minS, maxS, vol, K, r, T):
+    """Sweep spot from minS to maxS, decaying one day of time-to-maturity per point."""
     S_vals = np.linspace(minS, maxS)
     C_vals = []
-    t = 0
-    
-    for s in S_vals:
-        remaining_time = (n-t)/252
-        if(remaining_time == 0): break
-        c = bsm_price(s,100,0.12,0.5,vol)
-        print(f"The option price for S={s} is {c}")
-        
+
+    for t, s in enumerate(S_vals):
+        remaining_time = T - t/252
+        if remaining_time <= 0:
+            break
+        c = bsm_price(s, K, r, remaining_time, vol)
         C_vals.append(c)
-        t+=1
-    return S_vals, C_vals
+
+    return S_vals[:len(C_vals)], C_vals
 
 def main():
     df = yf.download(
@@ -66,10 +63,9 @@ def main():
     multi_level_index=False
     )
     #This df should contain Index(['Open','High','Low','Close','Adj Close','Volume'], ...)
-    sample_size = len(df["Open"])
     vol = estimate_vol(df)
-    
-    S_vals, C_vals = change_in_stock(60, 140, vol, 100, 0.12, 0.5, sample_size)
+
+    S_vals, C_vals = change_in_stock(60, 140, vol, 100, 0.12, 0.5)
     
     plt.style.use("dark_background")
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -81,7 +77,7 @@ def main():
 
     ax.set_xlim(S_vals.min(), S_vals.max())
     ax.set_ylim(min(C_vals) - 1, max(C_vals) + 1)
-    ax.set_title("Black-Scholes Call Price vs Stock Price", fontsize=14)
+    ax.set_title("Black-Scholes Call Price vs Stock Price (decaying to expiry)", fontsize=14)
     ax.set_xlabel("Stock Price S")
     ax.set_ylabel("Option Price C")
     ax.grid(color="white", alpha=0.08)

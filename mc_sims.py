@@ -34,23 +34,31 @@ def random_walk(S0, vol, r, T):
 def main():
     df = fetch_ticker('AAPL',"1y","1d")
     vol = estimate_vol(df)
+    # start where the history does, so the sims can be checked against what
+    # AAPL actually did over the next T days
     S0 = df["Open"].iloc[0]
     r = 0.05
     T = 30
     K = S0+5
-    final_option_values = []
     ITERATIONS = 100
     final_call_values = []
     final_put_values = []
 
+    # realized prices over that same T-day window, for comparison against the sims
+    actual_path = df["Close"].iloc[1:T+1].values
+
     for n in range(ITERATIONS):
         Ypoints = random_walk(S0,vol,r,T)
         Xpoints = [t for t in range(len(Ypoints))]
-        plt.plot(Xpoints,Ypoints,alpha=0.6)
+        plt.plot(Xpoints, Ypoints, alpha=0.15, color="steelblue",
+                 label="Simulated (MC)" if n == 0 else None)
 
         final_call_values.append(np.maximum(Ypoints[-1] - K, 0)) #list of option values for a call option
         final_put_values.append(np.maximum(K - Ypoints[-1], 0)) #list of option values for a put option
-    
+
+    plt.plot(range(len(actual_path)), actual_path,
+             color="black", linewidth=2.5, label="Actual (realized)")
+
     #compute risk neutral option price by discounting average end prices from sim
     call_price = np.exp(-r*T/252) * np.mean(final_call_values)
     put_price = np.exp(-r*T/252) * np.mean(final_put_values)
@@ -62,7 +70,8 @@ def main():
 
     plt.xlabel("Time")
     plt.ylabel("Stock Price")
-    plt.title("Monte Carlo Simulations")
+    plt.title("Monte Carlo Simulations vs Actual Price Path")
+    plt.legend()
     plt.show()
 
 if __name__ == "__main__":

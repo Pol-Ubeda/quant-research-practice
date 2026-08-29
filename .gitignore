@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+
+# Code Runner (VS Code extension) leftover
+tempCodeRunnerFile*
+
+# runtime data written by app.py (not currently published)
+iv_snapshot.json
+portfolio_selections.json
